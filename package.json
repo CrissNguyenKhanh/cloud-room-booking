@@ -1,0 +1,19 @@
+{
+  "name": "cloud-room-booking-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Backend monorepo for a cloud room booking case study",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "npm run test:identity && npm run test:booking && npm run test:notification",
+    "test:identity": "npm --prefix services/identity-service test",
+    "test:booking": "npm --prefix services/booking-service test",
+    "test:notification": "npm --prefix services/notification-service test",
+    "check": "npm run check:identity && npm run check:booking && npm run check:notification",
+    "check:identity": "npm --prefix services/identity-service run check",
+    "check:booking": "npm --prefix services/booking-service run check",
+    "check:notification": "npm --prefix services/notification-service run check"
+  }
+}

@@ -1,0 +1,73 @@
+name: cloud-room-booking
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
+      IDENTITY_DB_USER: ${IDENTITY_DB_USER}
+      IDENTITY_DB_PASSWORD: ${IDENTITY_DB_PASSWORD}
+      BOOKING_DB_USER: ${BOOKING_DB_USER}
+      BOOKING_DB_PASSWORD: ${BOOKING_DB_PASSWORD}
+      NOTIFICATION_DB_USER: ${NOTIFICATION_DB_USER}
+      NOTIFICATION_DB_PASSWORD: ${NOTIFICATION_DB_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  identity-service:
+    build: ./services/identity-service
+    env_file: ${ENV_FILE:-.env}
+    environment:
+      PORT: 3000
+    command: ["sh", "-c", "npm run migrate && npm run seed && node src/server.js"]
+    ports: ["3001:3000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  notification-service:
+    build: ./services/notification-service
+    env_file: ${ENV_FILE:-.env}
+    environment:
+      PORT: 3000
+    command: ["sh", "-c", "npm run migrate && node src/server.js"]
+    ports: ["3003:3000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  booking-service:
+    build: ./services/booking-service
+    env_file: ${ENV_FILE:-.env}
+    environment:
+      PORT: 3000
+    command: ["sh", "-c", "npm run migrate && npm run seed && node src/server.js"]
+    ports: ["3002:3000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      identity-service: { condition: service_healthy }
+      notification-service: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres-data:
