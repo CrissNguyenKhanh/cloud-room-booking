@@ -1,5 +1,7 @@
 import pg from 'pg';
 
+pg.types.setTypeParser(1082, (value) => value);
+
 export function createPool(config) {
   return new pg.Pool({
     connectionString: config.databaseUrl, max: 15, connectionTimeoutMillis: 3000, idleTimeoutMillis: 30000,

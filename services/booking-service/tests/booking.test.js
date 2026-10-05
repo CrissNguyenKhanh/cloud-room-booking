@@ -2,8 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
+import pg from 'pg';
 import { randomUUID } from 'node:crypto';
 import { createApp } from '../src/app.js';
+import { BookingService } from '../src/services/booking-service.js';
+import '../src/config/database.js';
 
 const roomId = '11111111-1111-4111-8111-111111111111';
 const room2Id = '22222222-2222-4222-8222-222222222222';
@@ -81,10 +84,31 @@ function postBooking(app, user, key, payload = { room_id: roomId, slot_id: slotI
 }
 
 test('creates a valid booking and its outbox event', async () => {
+  const bookingDate = futureDate();
   const { app, repository } = fixture();
-  const response = await postBooking(app, userA, 'booking-key-0001');
+  const response = await postBooking(app, userA, 'booking-key-0001', {
+    room_id: roomId, slot_id: slotId, booking_date: bookingDate
+  });
   assert.equal(response.status, 201); assert.equal(response.body.data.status, 'CONFIRMED');
+  assert.equal(response.body.data.booking_date, bookingDate);
   assert.equal(repository.bookings.length, 1); assert.equal(repository.outbox[0].event_type, 'BOOKING_CREATED');
+  assert.equal(repository.outbox[0].payload.booking_date, bookingDate);
+});
+
+test('preserves a PostgreSQL DATE string in the booking result and BOOKING_CREATED payload', async () => {
+  const bookingDate = pg.types.getTypeParser(1082, 'text')('2026-10-07');
+  const repository = new FakeRepository();
+  const service = new BookingService(repository, identityClient);
+  const result = await service.create(userA, {
+    room_id: roomId, slot_id: slotId, booking_date: bookingDate
+  }, 'date-serialization-key', 'date-serialization-request');
+  const serializedBooking = JSON.parse(JSON.stringify(result.booking));
+
+  assert.equal(bookingDate, '2026-10-07');
+  assert.notEqual(bookingDate, '2026-10-06T17:00:00.000Z');
+  assert.equal(serializedBooking.booking_date, '2026-10-07');
+  assert.equal(repository.outbox[0].event_type, 'BOOKING_CREATED');
+  assert.equal(repository.outbox[0].payload.booking_date, '2026-10-07');
 });
 
 test('rejects an invalid slot and a past date', async () => {
