@@ -8,6 +8,8 @@ import { loadConfig } from '../src/config/env.js';
 const userA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const userB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const aggregateId = '33333333-3333-4333-8333-333333333333';
+const roomId = '66666666-6666-4666-8666-666666666666';
+const slotId = '77777777-7777-4777-8777-777777777777';
 const createdEventId = '11111111-1111-4111-8111-111111111111';
 const cancelledEventId = '22222222-2222-4222-8222-222222222222';
 const notificationId = '44444444-4444-4444-8444-444444444444';
@@ -162,24 +164,51 @@ test('POST /internal/v1/events rejects an incorrect service key', async () => {
 
 test('POST /internal/v1/events accepts a valid BOOKING_CREATED event', async () => {
   const { app, repository } = fixture();
-  const response = await postEvent(app, validEvent());
+  const response = await postEvent(app, validEvent({
+    payload: {
+      booking_id: aggregateId,
+      room_id: roomId,
+      slot_id: slotId,
+      booking_date: '2026-10-07'
+    }
+  }));
 
   assert.equal(response.status, 201);
   assert.equal(response.body.data.event_id, createdEventId);
   assert.equal(response.body.data.user_id, userA);
   assert.equal(response.body.data.type, 'BOOKING_CREATED');
-  assert.deepEqual(response.body.data.payload, { booking_id: aggregateId });
+  assert.deepEqual(response.body.data.payload, {
+    booking_id: aggregateId,
+    room_id: roomId,
+    slot_id: slotId,
+    booking_date: '2026-10-07',
+    title: 'Đặt phòng thành công',
+    message: 'Đặt phòng của bạn ngày 07/10/2026 đã được xác nhận.'
+  });
   assert.equal(repository.notifications.length, 1);
+});
+
+test('POST /internal/v1/events uses the BOOKING_CREATED fallback message without a booking date', async () => {
+  const { app } = fixture();
+  const response = await postEvent(app, validEvent());
+
+  assert.equal(response.status, 201);
+  assert.equal(response.body.data.payload.title, 'Đặt phòng thành công');
+  assert.equal(response.body.data.payload.message, 'Đặt phòng của bạn đã được xác nhận.');
+  assert.equal(response.body.data.payload.booking_id, aggregateId);
 });
 
 test('POST /internal/v1/events returns the existing notification for a duplicate event_id', async () => {
   const { app, repository } = fixture();
   const first = await postEvent(app, validEvent());
-  const duplicate = await postEvent(app, validEvent());
+  const duplicate = await postEvent(app, validEvent({
+    payload: { booking_id: aggregateId, title: 'This duplicate must not replace the original' }
+  }));
 
   assert.equal(first.status, 201);
   assert.equal(duplicate.status, 200);
   assert.equal(duplicate.body.data.id, first.body.data.id);
+  assert.deepEqual(duplicate.body.data.payload, first.body.data.payload);
   assert.equal(repository.notifications.length, 1);
 });
 
@@ -240,12 +269,48 @@ test('POST /internal/v1/events accepts a valid BOOKING_CANCELLED event', async (
   const response = await postEvent(app, validEvent({
     event_id: cancelledEventId,
     event_type: 'BOOKING_CANCELLED',
-    payload: { booking_id: aggregateId, reason: 'Plans changed' }
+    payload: { booking_id: aggregateId, reason: 'Khách thay đổi kế hoạch' }
   }));
 
   assert.equal(response.status, 201);
   assert.equal(response.body.data.type, 'BOOKING_CANCELLED');
+  assert.deepEqual(response.body.data.payload, {
+    booking_id: aggregateId,
+    reason: 'Khách thay đổi kế hoạch',
+    title: 'Đặt phòng đã bị hủy',
+    message: 'Đặt phòng của bạn đã được hủy. Lý do: Khách thay đổi kế hoạch'
+  });
   assert.equal(repository.notifications.length, 1);
+});
+
+test('POST /internal/v1/events uses the BOOKING_CANCELLED fallback message without a reason', async () => {
+  const { app } = fixture();
+  const response = await postEvent(app, validEvent({
+    event_id: cancelledEventId,
+    event_type: 'BOOKING_CANCELLED'
+  }));
+
+  assert.equal(response.status, 201);
+  assert.equal(response.body.data.payload.title, 'Đặt phòng đã bị hủy');
+  assert.equal(response.body.data.payload.message, 'Đặt phòng của bạn đã được hủy.');
+  assert.equal(response.body.data.payload.booking_id, aggregateId);
+});
+
+test('POST /internal/v1/events preserves custom notification title and message', async () => {
+  const { app } = fixture();
+  const response = await postEvent(app, validEvent({
+    payload: {
+      booking_id: aggregateId,
+      booking_date: '2026-10-07',
+      title: 'Custom title',
+      message: 'Custom message'
+    }
+  }));
+
+  assert.equal(response.status, 201);
+  assert.equal(response.body.data.payload.title, 'Custom title');
+  assert.equal(response.body.data.payload.message, 'Custom message');
+  assert.equal(response.body.data.payload.booking_date, '2026-10-07');
 });
 
 test('GET /api/v1/notifications rejects a missing bearer token with the error envelope', async () => {
