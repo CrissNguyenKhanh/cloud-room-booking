@@ -7,6 +7,7 @@
     "node": ">=22"
   },
   "scripts": {
+    "dev:local": "node scripts/start-local-backend.mjs",
     "test": "npm run test:identity && npm run test:booking && npm run test:notification",
     "test:identity": "npm --prefix services/identity-service test",
     "test:booking": "npm --prefix services/booking-service test",
