@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
 import { createApp } from '../src/app.js';
+import { loadConfig } from '../src/config/env.js';
 
 const userA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const userB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -24,6 +25,14 @@ const config = {
 };
 
 const readyPool = { query: async () => ({ rows: [{ ready: true }] }) };
+const validEnvironment = {
+  FRONTEND_ORIGIN: 'http://localhost:5173',
+  NOTIFICATION_DATABASE_URL: 'postgresql://notification:test@localhost/cloud_room',
+  JWT_SECRET: 'test-secret-that-is-at-least-thirty-two-characters',
+  JWT_ISSUER: 'issuer',
+  JWT_AUDIENCE: 'audience',
+  INTERNAL_SERVICE_KEY: 'test-service-key-long-enough'
+};
 
 class FakeNotificationRepository {
   constructor(notifications = []) {
@@ -113,6 +122,17 @@ function postEvent(app, body, serviceKey = config.internalServiceKey) {
 function bearer(userId, overrides) {
   return `Bearer ${token(userId, overrides)}`;
 }
+
+test('environment defaults the database connection timeout to 10000 ms', () => {
+  assert.equal(loadConfig(validEnvironment).databaseConnectionTimeoutMs, 10000);
+});
+
+test('environment accepts a database connection timeout override', () => {
+  assert.equal(loadConfig({
+    ...validEnvironment,
+    DATABASE_CONNECTION_TIMEOUT_MS: '15000'
+  }).databaseConnectionTimeoutMs, 15000);
+});
 
 test('health endpoint exposes process health', async () => {
   const { app } = fixture();

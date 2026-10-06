@@ -5,6 +5,7 @@ import jwt from 'jsonwebtoken';
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
 import { createApp } from '../src/app.js';
+import { loadConfig } from '../src/config/env.js';
 import { BookingService } from '../src/services/booking-service.js';
 import '../src/config/database.js';
 
@@ -23,6 +24,16 @@ const config = {
 const pool = { query: async () => ({ rows: [{ ok: 1 }] }) };
 const identityClient = { assertActive: async () => ({ status: 'ACTIVE' }) };
 const dispatcher = { dispatchById: async () => {}, retryBatch: async () => [] };
+const validEnvironment = {
+  FRONTEND_ORIGIN: 'http://localhost:5173',
+  BOOKING_DATABASE_URL: 'postgresql://booking:test@localhost/cloud_room',
+  JWT_SECRET: 'test-secret-that-is-at-least-thirty-two-characters',
+  JWT_ISSUER: 'test-issuer',
+  JWT_AUDIENCE: 'test-audience',
+  INTERNAL_SERVICE_KEY: 'test-service-key-long-enough',
+  IDENTITY_SERVICE_URL: 'http://localhost:3001',
+  NOTIFICATION_SERVICE_URL: 'http://localhost:3003'
+};
 
 function token(userId, role = 'USER') {
   return jwt.sign({ role, status: 'ACTIVE' }, config.jwtSecret, { subject: userId,
@@ -82,6 +93,49 @@ function fixture(repository = new FakeRepository(), customDispatcher = dispatche
 function postBooking(app, user, key, payload = { room_id: roomId, slot_id: slotId, booking_date: futureDate() }) {
   return request(app).post('/api/v1/bookings').set('Authorization', `Bearer ${token(user)}`).set('Idempotency-Key', key).send(payload);
 }
+
+test('environment defaults the database connection timeout to 10000 ms', () => {
+  assert.equal(loadConfig(validEnvironment).databaseConnectionTimeoutMs, 10000);
+});
+
+test('environment accepts a database connection timeout override', () => {
+  assert.equal(loadConfig({
+    ...validEnvironment,
+    DATABASE_CONNECTION_TIMEOUT_MS: '15000'
+  }).databaseConnectionTimeoutMs, 15000);
+});
+
+test('readiness relies on the pool query without a separate 2000 ms timer', async () => {
+  let readinessTimerScheduled = false;
+  let query;
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (callback, delay, ...args) => {
+    if (delay === 2000) {
+      readinessTimerScheduled = true;
+      return { ref() { return this; }, unref() { return this; } };
+    }
+    return originalSetTimeout(callback, delay, ...args);
+  };
+
+  try {
+    const readyPool = { query: async (sql) => { query = sql; return { rows: [{ ready: true }] }; } };
+    const app = createApp({
+      pool: readyPool,
+      config,
+      repository: new FakeRepository(),
+      identityClient,
+      dispatcher
+    });
+    const response = await request(app).get('/ready');
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.status, 'ready');
+    assert.equal(query, 'SELECT 1');
+    assert.equal(readinessTimerScheduled, false);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
 
 test('creates a valid booking and its outbox event', async () => {
   const bookingDate = futureDate();

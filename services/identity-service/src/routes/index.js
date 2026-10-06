@@ -7,10 +7,7 @@ export function createRoutes({ controller, pool, config }) {
   const auth = authMiddleware(config);
   router.get('/health', (_req, res) => res.json({ status: 'ok', service: config.serviceName }));
   router.get('/ready', asyncHandler(async (_req, res) => {
-    await Promise.race([
-      pool.query('SELECT 1'),
-      new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('Database readiness timeout'), { code: 'DATABASE_NOT_READY', status: 503 })), 2000))
-    ]);
+    await pool.query('SELECT 1');
     res.json({ status: 'ready', service: config.serviceName });
   }));
   router.post('/api/v1/auth/register', asyncHandler(controller.register));
