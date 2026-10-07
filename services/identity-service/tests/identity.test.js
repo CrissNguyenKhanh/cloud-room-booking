@@ -4,6 +4,7 @@ import request from 'supertest';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { createApp } from '../src/app.js';
+import { loadConfig } from '../src/config/env.js';
 
 const config = {
   nodeEnv: 'test', frontendOrigin: 'http://localhost:5173', serviceName: 'identity-service',
@@ -11,6 +12,14 @@ const config = {
   jwtAudience: 'test-audience', jwtExpiresIn: '1h', internalServiceKey: 'test-internal-key-long-enough'
 };
 const pool = { query: async () => ({ rows: [{ '?column?': 1 }] }) };
+const validEnvironment = {
+  FRONTEND_ORIGIN: 'http://localhost:5173',
+  IDENTITY_DATABASE_URL: 'postgresql://identity:test@localhost/cloud_room',
+  JWT_SECRET: 'test-secret-that-is-at-least-thirty-two-characters',
+  JWT_ISSUER: 'test-issuer',
+  JWT_AUDIENCE: 'test-audience',
+  INTERNAL_SERVICE_KEY: 'test-internal-key-long-enough'
+};
 
 function repositoryFixture() {
   const users = new Map();
@@ -32,6 +41,43 @@ function publicUser({ password_hash: _password, ...user }) { return user; }
 function token(id, role = 'USER') {
   return jwt.sign({ role, status: 'ACTIVE' }, config.jwtSecret, { subject: id, issuer: config.jwtIssuer, audience: config.jwtAudience, expiresIn: '1h' });
 }
+
+test('environment defaults the database connection timeout to 10000 ms', () => {
+  assert.equal(loadConfig(validEnvironment).databaseConnectionTimeoutMs, 10000);
+});
+
+test('environment accepts a database connection timeout override', () => {
+  assert.equal(loadConfig({
+    ...validEnvironment,
+    DATABASE_CONNECTION_TIMEOUT_MS: '15000'
+  }).databaseConnectionTimeoutMs, 15000);
+});
+
+test('readiness relies on the pool query without a separate 2000 ms timer', async () => {
+  let readinessTimerScheduled = false;
+  let query;
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (callback, delay, ...args) => {
+    if (delay === 2000) {
+      readinessTimerScheduled = true;
+      return { ref() { return this; }, unref() { return this; } };
+    }
+    return originalSetTimeout(callback, delay, ...args);
+  };
+
+  try {
+    const readyPool = { query: async (sql) => { query = sql; return { rows: [{ ready: true }] }; } };
+    const app = createApp({ pool: readyPool, config, repository: repositoryFixture() });
+    const response = await request(app).get('/ready');
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.status, 'ready');
+    assert.equal(query, 'SELECT 1');
+    assert.equal(readinessTimerScheduled, false);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
 
 test('registers a user, normalizes email, and never returns password data', async () => {
   const app = createApp({ pool, config, repository: repositoryFixture() });

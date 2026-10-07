@@ -5,6 +5,7 @@ const schema = z.object({
   PORT: z.coerce.number().int().positive().max(65535).default(3000),
   FRONTEND_ORIGIN: z.string().url(),
   BOOKING_DATABASE_URL: z.string().min(1),
+  DATABASE_CONNECTION_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
   JWT_SECRET: z.string().min(32),
   JWT_ISSUER: z.string().min(1),
   JWT_AUDIENCE: z.string().min(1),
@@ -26,7 +27,8 @@ export function loadConfig(env = process.env) {
   const data = result.data;
   return {
     nodeEnv: data.NODE_ENV, port: data.PORT, frontendOrigin: data.FRONTEND_ORIGIN,
-    databaseUrl: data.BOOKING_DATABASE_URL, jwtSecret: data.JWT_SECRET,
+    databaseUrl: data.BOOKING_DATABASE_URL, databaseConnectionTimeoutMs: data.DATABASE_CONNECTION_TIMEOUT_MS,
+    jwtSecret: data.JWT_SECRET,
     jwtIssuer: data.JWT_ISSUER, jwtAudience: data.JWT_AUDIENCE,
     internalServiceKey: data.INTERNAL_SERVICE_KEY, identityServiceUrl: data.IDENTITY_SERVICE_URL,
     notificationServiceUrl: data.NOTIFICATION_SERVICE_URL, identityTimeoutMs: data.IDENTITY_TIMEOUT_MS,
