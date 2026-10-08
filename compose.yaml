@@ -21,6 +21,8 @@ services:
       timeout: 3s
       retries: 15
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:5433:5432"
 
   identity-service:
     build: ./services/identity-service
