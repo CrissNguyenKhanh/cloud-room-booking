@@ -11,7 +11,6 @@ import '../src/config/database.js';
 
 const roomId = '11111111-1111-4111-8111-111111111111';
 const room2Id = '22222222-2222-4222-8222-222222222222';
-const slotId = '33333333-3333-4333-8333-333333333333';
 const userA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const userB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const futureDate = (days = 2) => new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
@@ -43,9 +42,8 @@ function token(userId, role = 'USER') {
 class FakeRepository {
   constructor() {
     this.pool = this;
-    this.rooms = [{ id: roomId, name: 'Room A', capacity: 8, equipment: [], active: true },
-      { id: room2Id, name: 'Room B', capacity: 8, equipment: [], active: true }];
-    this.slots = [{ id: slotId, code: 'SLOT-1', start_time: '08:00', end_time: '10:00', active: true }];
+    this.rooms = [{ id: roomId, room_number: '101', name: 'Room A', room_type: 'standard', price_per_night: 1_000_000, capacity: 8, equipment: [], active: true },
+      { id: room2Id, room_number: '102', name: 'Room B', room_type: 'standard', price_per_night: 1_200_000, capacity: 8, equipment: [], active: true }];
     this.bookings = [];
     this.outbox = [];
     this.queue = Promise.resolve();
@@ -59,13 +57,18 @@ class FakeRepository {
   }
   async findIdempotent(_db, userId, key) { return this.bookings.find((b) => b.user_id === userId && b.idempotency_key === key) || null; }
   async findActiveRoom(_db, id) { return this.rooms.find((r) => r.id === id && r.active) || null; }
-  async findActiveSlot(_db, id) { return this.slots.find((s) => s.id === id && s.active) || null; }
   async insertBooking(_db, data) {
-    if (this.bookings.some((b) => b.room_id === data.roomId && b.booking_date === data.bookingDate && b.slot_id === data.slotId && b.status === 'CONFIRMED')) {
-      throw Object.assign(new Error('unique violation'), { code: '23505' });
+    if (this.bookings.some((b) => b.room_id === data.roomId && b.status === 'CONFIRMED'
+      && b.check_in_date < data.checkOutDate && data.checkInDate < b.check_out_date)) {
+      throw Object.assign(new Error('exclusion violation'), { code: '23P01' });
     }
-    const booking = { id: randomUUID(), room_id: data.roomId, slot_id: data.slotId, booking_date: data.bookingDate,
-      user_id: data.userId, idempotency_key: data.idempotencyKey, request_hash: data.requestHash, status: 'CONFIRMED' };
+    const room = this.rooms.find((candidate) => candidate.id === data.roomId);
+    const booking = { id: randomUUID(), booking_code: data.bookingCode, room_id: data.roomId,
+      room_number: room.room_number, room_name: room.name, room_type: room.room_type,
+      user_id: data.userId, status: 'CONFIRMED', check_in_date: data.checkInDate,
+      check_out_date: data.checkOutDate, guests: data.guests, nights: data.nights,
+      price_per_night: data.pricePerNight, total_price: data.totalPrice,
+      idempotency_key: data.idempotencyKey, request_hash: data.requestHash };
     this.bookings.push(booking); return booking;
   }
   async insertOutbox(_db, event) {
@@ -75,8 +78,11 @@ class FakeRepository {
   }
   async listRooms() { return this.rooms.filter((r) => r.active); }
   async getRoom(id) { return this.rooms.find((r) => r.id === id && r.active) || null; }
-  async availability(id, date) { return this.slots.map((s) => ({ ...s, available: !this.bookings.some((b) => b.room_id === id && b.booking_date === date && b.slot_id === s.id && b.status === 'CONFIRMED') })); }
-  async listMine(userId) { return this.bookings.filter((b) => b.user_id === userId); }
+  async listMine(userId) {
+    const bookings = this.bookings.filter((b) => b.user_id === userId);
+    return { bookings, total: bookings.length };
+  }
+  async getBookingView(_db, id) { return this.bookings.find((b) => b.id === id) || null; }
   async findBooking(_db, id) { return this.bookings.find((b) => b.id === id) || null; }
   async markCancelled(_db, id, reason) { const booking = this.bookings.find((b) => b.id === id); booking.status = 'CANCELLED'; booking.cancel_reason = reason; return booking; }
   async getOutbox(id) { return this.outbox.find((event) => event.event_id === id) || null; }
@@ -84,13 +90,15 @@ class FakeRepository {
   async markOutboxSent(id) { this.outbox.find((event) => event.event_id === id).status = 'SENT'; }
   async markOutboxFailure() {}
   async listOutbox() { return this.outbox; }
-  async listBookings() { return this.bookings; }
+  async listBookings() { return { bookings: this.bookings, total: this.bookings.length }; }
 }
 
 function fixture(repository = new FakeRepository(), customDispatcher = dispatcher) {
   return { repository, app: createApp({ pool, config, repository, identityClient, dispatcher: customDispatcher }) };
 }
-function postBooking(app, user, key, payload = { room_id: roomId, slot_id: slotId, booking_date: futureDate() }) {
+function postBooking(app, user, key, payload = {
+  room_id: roomId, check_in_date: futureDate(2), check_out_date: futureDate(4), guests: 2
+}) {
   return request(app).post('/api/v1/bookings').set('Authorization', `Bearer ${token(user)}`).set('Idempotency-Key', key).send(payload);
 }
 
@@ -138,38 +146,48 @@ test('readiness relies on the pool query without a separate 2000 ms timer', asyn
 });
 
 test('creates a valid booking and its outbox event', async () => {
-  const bookingDate = futureDate();
+  const checkInDate = futureDate(2);
+  const checkOutDate = futureDate(4);
   const { app, repository } = fixture();
   const response = await postBooking(app, userA, 'booking-key-0001', {
-    room_id: roomId, slot_id: slotId, booking_date: bookingDate
+    room_id: roomId, check_in_date: checkInDate, check_out_date: checkOutDate, guests: 2
   });
   assert.equal(response.status, 201); assert.equal(response.body.data.status, 'CONFIRMED');
-  assert.equal(response.body.data.booking_date, bookingDate);
+  assert.equal(response.body.data.check_in_date, checkInDate);
+  assert.equal(response.body.data.check_out_date, checkOutDate);
   assert.equal(repository.bookings.length, 1); assert.equal(repository.outbox[0].event_type, 'BOOKING_CREATED');
-  assert.equal(repository.outbox[0].payload.booking_date, bookingDate);
+  assert.equal(repository.outbox[0].payload.check_in_date, checkInDate);
+  assert.equal(repository.outbox[0].payload.check_out_date, checkOutDate);
 });
 
 test('preserves a PostgreSQL DATE string in the booking result and BOOKING_CREATED payload', async () => {
-  const bookingDate = pg.types.getTypeParser(1082, 'text')('2026-10-07');
+  const checkInDate = pg.types.getTypeParser(1082, 'text')(futureDate(2));
+  const checkOutDate = pg.types.getTypeParser(1082, 'text')(futureDate(4));
   const repository = new FakeRepository();
   const service = new BookingService(repository, identityClient);
   const result = await service.create(userA, {
-    room_id: roomId, slot_id: slotId, booking_date: bookingDate
+    room_id: roomId, check_in_date: checkInDate, check_out_date: checkOutDate, guests: 2
   }, 'date-serialization-key', 'date-serialization-request');
   const serializedBooking = JSON.parse(JSON.stringify(result.booking));
 
-  assert.equal(bookingDate, '2026-10-07');
-  assert.notEqual(bookingDate, '2026-10-06T17:00:00.000Z');
-  assert.equal(serializedBooking.booking_date, '2026-10-07');
+  assert.equal(checkInDate, futureDate(2));
+  assert.match(checkInDate, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(serializedBooking.check_in_date, checkInDate);
+  assert.equal(serializedBooking.check_out_date, checkOutDate);
   assert.equal(repository.outbox[0].event_type, 'BOOKING_CREATED');
-  assert.equal(repository.outbox[0].payload.booking_date, '2026-10-07');
+  assert.equal(repository.outbox[0].payload.check_in_date, checkInDate);
+  assert.equal(repository.outbox[0].payload.check_out_date, checkOutDate);
 });
 
-test('rejects an invalid slot and a past date', async () => {
+test('rejects a missing room and a past check-in date', async () => {
   const { app } = fixture();
-  const invalidSlot = await postBooking(app, userA, 'booking-key-0002', { room_id: roomId, slot_id: randomUUID(), booking_date: futureDate() });
-  assert.equal(invalidSlot.status, 404); assert.equal(invalidSlot.body.error.code, 'SLOT_NOT_FOUND');
-  const past = await postBooking(app, userA, 'booking-key-0003', { room_id: roomId, slot_id: slotId, booking_date: '2020-01-01' });
+  const missingRoom = await postBooking(app, userA, 'booking-key-0002', {
+    room_id: randomUUID(), check_in_date: futureDate(2), check_out_date: futureDate(4), guests: 2
+  });
+  assert.equal(missingRoom.status, 404); assert.equal(missingRoom.body.error.code, 'ROOM_NOT_FOUND');
+  const past = await postBooking(app, userA, 'booking-key-0003', {
+    room_id: roomId, check_in_date: '2020-01-01', check_out_date: '2020-01-03', guests: 2
+  });
   assert.equal(past.status, 400); assert.equal(past.body.error.code, 'VALIDATION_ERROR');
 });
 
@@ -202,7 +220,9 @@ test('same Idempotency-Key and payload replays the existing booking', async () =
 test('same Idempotency-Key with different payload returns 409', async () => {
   const { app } = fixture();
   await postBooking(app, userA, 'different-payload-key');
-  const response = await postBooking(app, userA, 'different-payload-key', { room_id: room2Id, slot_id: slotId, booking_date: futureDate() });
+  const response = await postBooking(app, userA, 'different-payload-key', {
+    room_id: room2Id, check_in_date: futureDate(2), check_out_date: futureDate(4), guests: 2
+  });
   assert.equal(response.status, 409); assert.equal(response.body.error.code, 'IDEMPOTENCY_KEY_REUSED');
 });
 
@@ -214,7 +234,7 @@ test('notification failure does not roll back a committed booking', async () => 
   assert.equal(repository.outbox[0].status, 'PENDING');
 });
 
-test('cancelling a booking releases the room slot', async () => {
+test('cancelling a booking releases the room for the same stay', async () => {
   const { app, repository } = fixture();
   const first = await postBooking(app, userA, 'cancel-release-key-a');
   const cancelled = await request(app).post(`/api/v1/bookings/${first.body.data.id}/cancel`)
