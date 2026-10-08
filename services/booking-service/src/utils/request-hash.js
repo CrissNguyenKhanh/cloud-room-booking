@@ -2,9 +2,10 @@ import { createHash } from 'node:crypto';
 
 export function bookingRequestHash(payload) {
   const canonical = JSON.stringify({
-    booking_date: payload.booking_date,
     room_id: payload.room_id,
-    slot_id: payload.slot_id
+    check_in_date: payload.check_in_date,
+    check_out_date: payload.check_out_date,
+    guests: payload.guests
   });
   return createHash('sha256').update(canonical).digest('hex');
 }
