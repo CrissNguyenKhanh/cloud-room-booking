@@ -141,6 +141,9 @@ export function createBookingController({ bookingService, repository, dispatcher
     },
 
     // ----- Admin -----
+    listAdminRooms: async (_req, res) => {
+      res.json({ data: await repository.listRooms({ includeInactive: true }) });
+    },
     createRoom: async (req, res) => res.status(201).json({ data: await bookingService.createRoom(roomCreateSchema.parse(req.body)) }),
     updateRoom: async (req, res) => {
       res.json({ data: await bookingService.updateRoom(uuid.parse(req.params.id), roomUpdateSchema.parse(req.body)) });
