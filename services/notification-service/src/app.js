@@ -7,10 +7,10 @@ import { createNotificationController } from './controllers/notification-control
 import { createRoutes } from './routes/index.js';
 import { requestContext } from './middleware/request-context.js';
 import { errorHandler, notFound } from './middleware/error-handler.js';
-export function createApp({ pool, config, repository = new NotificationRepository(pool) }) {
+export function createApp({ pool, config, repository = new NotificationRepository(pool), realtime = null }) {
   const app = express();
   app.disable('x-powered-by'); app.use(helmet()); app.use(cors({ origin: config.frontendOrigin, credentials: true }));
   app.use(express.json({ limit: '32kb' })); app.use(requestContext(config.serviceName));
-  app.use(createRoutes({ controller: createNotificationController(new NotificationService(repository)), pool, config }));
+  app.use(createRoutes({ controller: createNotificationController(new NotificationService(repository, realtime)), pool, config }));
   app.use(notFound); app.use(errorHandler(config)); return app;
 }

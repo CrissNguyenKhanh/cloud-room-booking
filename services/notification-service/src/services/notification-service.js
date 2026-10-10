@@ -117,14 +117,36 @@ export function buildNotificationPayload(event) {
 }
 
 export class NotificationService {
-  constructor(repository) { this.repository = repository; }
-  receive(event) {
+  constructor(repository, realtime = null) {
+    this.repository = repository;
+    this.realtime = realtime;
+  }
+  async receive(event) {
     const payload = buildNotificationPayload(event);
-    return this.repository.create({
+    const adminVisible = isAdminVisibleEvent(event, payload);
+    const result = await this.repository.create({
       ...event,
       payload,
-      adminVisible: isAdminVisibleEvent(event, payload)
+      adminVisible
     });
+    if (result.created && this.realtime?.publishNotificationCreated) {
+      try {
+        await this.realtime.publishNotificationCreated({
+          notificationId: result.notification.id,
+          eventType: event.event_type,
+          userId: event.user_id,
+          adminVisible: Boolean(result.notification.admin_visible ?? adminVisible)
+        });
+      } catch (error) {
+        console.error(JSON.stringify({
+          timestamp: new Date().toISOString(),
+          service: 'notification-service',
+          event: 'realtime_publish_failed',
+          errorType: error instanceof Error ? error.name : 'UnknownError'
+        }));
+      }
+    }
+    return result;
   }
   async list(actor) {
     const notifications = hasAdminRole(actor)
