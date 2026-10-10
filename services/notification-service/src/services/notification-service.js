@@ -7,28 +7,51 @@ function formatBookingDate(value) {
   return `${value.slice(8, 10)}/${value.slice(5, 7)}/${value.slice(0, 4)}`;
 }
 
+function trimmedString(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
 export function buildNotificationPayload(event) {
   const payload = { ...event.payload };
 
   if (event.event_type === 'BOOKING_CREATED') {
     const bookingDate = formatBookingDate(payload.booking_date);
+    const checkInDate = formatBookingDate(payload.check_in_date);
+    const checkOutDate = formatBookingDate(payload.check_out_date);
+    const roomName = trimmedString(payload.room_name);
+    let generatedMessage = 'Đặt phòng của bạn đã được xác nhận.';
+
+    if (bookingDate) {
+      generatedMessage = `Đặt phòng của bạn ngày ${bookingDate} đã được xác nhận.`;
+    } else if (checkInDate && checkOutDate) {
+      generatedMessage = roomName
+        ? `Phòng ${roomName} đã được xác nhận từ ${checkInDate} đến ${checkOutDate}.`
+        : `Đặt phòng của bạn đã được xác nhận từ ${checkInDate} đến ${checkOutDate}.`;
+    }
+
     return {
       ...payload,
       title: payload.title ?? 'Đặt phòng thành công',
-      message: payload.message ?? (bookingDate
-        ? `Đặt phòng của bạn ngày ${bookingDate} đã được xác nhận.`
-        : 'Đặt phòng của bạn đã được xác nhận.')
+      message: payload.message ?? generatedMessage
     };
   }
 
   if (event.event_type === 'BOOKING_CANCELLED') {
-    const reason = typeof payload.reason === 'string' ? payload.reason.trim() : '';
+    const reason = trimmedString(payload.reason);
+    const bookingCode = trimmedString(payload.booking_code);
+    const roomName = trimmedString(payload.room_name);
+    let generatedMessage = 'Đặt phòng của bạn đã được hủy.';
+
+    if (reason) {
+      if (bookingCode) generatedMessage = `Đơn ${bookingCode} đã được hủy. Lý do: ${reason}`;
+      else if (roomName) generatedMessage = `Phòng ${roomName} đã được hủy. Lý do: ${reason}`;
+      else generatedMessage = `Đặt phòng của bạn đã được hủy. Lý do: ${reason}`;
+    }
+
     return {
       ...payload,
       title: payload.title ?? 'Đặt phòng đã bị hủy',
-      message: payload.message ?? (reason
-        ? `Đặt phòng của bạn đã được hủy. Lý do: ${reason}`
-        : 'Đặt phòng của bạn đã được hủy.')
+      message: payload.message ?? generatedMessage
     };
   }
 

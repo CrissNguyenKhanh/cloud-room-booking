@@ -162,8 +162,60 @@ test('POST /internal/v1/events rejects an incorrect service key', async () => {
   assert.equal(response.body.error.code, 'INVALID_SERVICE_KEY');
 });
 
-test('POST /internal/v1/events accepts a valid BOOKING_CREATED event', async () => {
+test('POST /internal/v1/events enriches a hotel BOOKING_CREATED event with the room and stay dates', async () => {
   const { app, repository } = fixture();
+  const response = await postEvent(app, validEvent({
+    payload: {
+      booking_id: aggregateId,
+      booking_code: 'BK-ABC123',
+      room_id: roomId,
+      room_name: 'Deluxe Skyline',
+      check_in_date: '2026-10-20',
+      check_out_date: '2026-10-22',
+      guests: 2,
+      nights: 2,
+      total_price: 2400000
+    }
+  }));
+
+  assert.equal(response.status, 201);
+  assert.equal(response.body.data.event_id, createdEventId);
+  assert.equal(response.body.data.user_id, userA);
+  assert.equal(response.body.data.type, 'BOOKING_CREATED');
+  assert.deepEqual(response.body.data.payload, {
+    booking_id: aggregateId,
+    booking_code: 'BK-ABC123',
+    room_id: roomId,
+    room_name: 'Deluxe Skyline',
+    check_in_date: '2026-10-20',
+    check_out_date: '2026-10-22',
+    guests: 2,
+    nights: 2,
+    total_price: 2400000,
+    title: 'Đặt phòng thành công',
+    message: 'Phòng Deluxe Skyline đã được xác nhận từ 20/10/2026 đến 22/10/2026.'
+  });
+  assert.equal(repository.notifications.length, 1);
+});
+
+test('POST /internal/v1/events enriches a hotel BOOKING_CREATED event without a room name', async () => {
+  const { app } = fixture();
+  const response = await postEvent(app, validEvent({
+    payload: {
+      booking_id: aggregateId,
+      check_in_date: '2026-10-20',
+      check_out_date: '2026-10-22'
+    }
+  }));
+
+  assert.equal(response.status, 201);
+  assert.equal(response.body.data.payload.title, 'Đặt phòng thành công');
+  assert.equal(response.body.data.payload.message,
+    'Đặt phòng của bạn đã được xác nhận từ 20/10/2026 đến 22/10/2026.');
+});
+
+test('POST /internal/v1/events keeps the legacy BOOKING_CREATED booking_date message', async () => {
+  const { app } = fixture();
   const response = await postEvent(app, validEvent({
     payload: {
       booking_id: aggregateId,
@@ -174,21 +226,11 @@ test('POST /internal/v1/events accepts a valid BOOKING_CREATED event', async () 
   }));
 
   assert.equal(response.status, 201);
-  assert.equal(response.body.data.event_id, createdEventId);
-  assert.equal(response.body.data.user_id, userA);
-  assert.equal(response.body.data.type, 'BOOKING_CREATED');
-  assert.deepEqual(response.body.data.payload, {
-    booking_id: aggregateId,
-    room_id: roomId,
-    slot_id: slotId,
-    booking_date: '2026-10-07',
-    title: 'Đặt phòng thành công',
-    message: 'Đặt phòng của bạn ngày 07/10/2026 đã được xác nhận.'
-  });
-  assert.equal(repository.notifications.length, 1);
+  assert.equal(response.body.data.payload.title, 'Đặt phòng thành công');
+  assert.equal(response.body.data.payload.message, 'Đặt phòng của bạn ngày 07/10/2026 đã được xác nhận.');
 });
 
-test('POST /internal/v1/events uses the BOOKING_CREATED fallback message without a booking date', async () => {
+test('POST /internal/v1/events uses the BOOKING_CREATED fallback message without valid stay dates', async () => {
   const { app } = fixture();
   const response = await postEvent(app, validEvent());
 
@@ -269,16 +311,17 @@ test('POST /internal/v1/events accepts a valid BOOKING_CANCELLED event', async (
   const response = await postEvent(app, validEvent({
     event_id: cancelledEventId,
     event_type: 'BOOKING_CANCELLED',
-    payload: { booking_id: aggregateId, reason: 'Khách thay đổi kế hoạch' }
+    payload: { booking_id: aggregateId, booking_code: 'BK-ABC123', reason: 'Khách thay đổi kế hoạch' }
   }));
 
   assert.equal(response.status, 201);
   assert.equal(response.body.data.type, 'BOOKING_CANCELLED');
   assert.deepEqual(response.body.data.payload, {
     booking_id: aggregateId,
+    booking_code: 'BK-ABC123',
     reason: 'Khách thay đổi kế hoạch',
     title: 'Đặt phòng đã bị hủy',
-    message: 'Đặt phòng của bạn đã được hủy. Lý do: Khách thay đổi kế hoạch'
+    message: 'Đơn BK-ABC123 đã được hủy. Lý do: Khách thay đổi kế hoạch'
   });
   assert.equal(repository.notifications.length, 1);
 });
