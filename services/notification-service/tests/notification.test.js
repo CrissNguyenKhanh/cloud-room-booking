@@ -7,6 +7,8 @@ import { loadConfig } from '../src/config/env.js';
 
 const userA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const userB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const adminA = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const adminB = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const aggregateId = '33333333-3333-4333-8333-333333333333';
 const roomId = '66666666-6666-4666-8666-666666666666';
 const slotId = '77777777-7777-4777-8777-777777777777';
@@ -39,9 +41,11 @@ const validEnvironment = {
 class FakeNotificationRepository {
   constructor(notifications = []) {
     this.notifications = notifications.map((notification) => ({
+      admin_visible: false,
       ...notification,
       payload: { ...notification.payload }
     }));
+    this.adminReads = new Map();
     this.sequence = this.notifications.length;
   }
 
@@ -57,7 +61,8 @@ class FakeNotificationRepository {
       type: event.event_type,
       payload: event.payload,
       read_at: null,
-      created_at: '2026-10-05T00:00:00.000Z'
+      created_at: '2026-10-05T00:00:00.000Z',
+      admin_visible: event.adminVisible
     };
     this.notifications.push(notification);
     return { notification, created: true };
@@ -67,11 +72,33 @@ class FakeNotificationRepository {
     return this.notifications.filter((notification) => notification.user_id === userId);
   }
 
+  async listForAdmin(adminUserId) {
+    return this.notifications
+      .filter((notification) => notification.admin_visible || notification.user_id === adminUserId)
+      .map((notification) => ({
+        ...notification,
+        read_at: notification.admin_visible
+          ? this.adminReads.get(`${notification.id}:${adminUserId}`) ?? null
+          : notification.read_at
+      }));
+  }
+
   async markRead(id, userId) {
     const notification = this.notifications.find((item) => item.id === id && item.user_id === userId);
     if (!notification) return null;
     notification.read_at ??= readAt;
     return notification;
+  }
+
+  async markReadByAdmin(id, adminUserId) {
+    const notification = this.notifications.find((item) =>
+      item.id === id && (item.admin_visible || item.user_id === adminUserId));
+    if (!notification) return null;
+    if (!notification.admin_visible) return this.markRead(id, adminUserId);
+
+    const key = `${notification.id}:${adminUserId}`;
+    if (!this.adminReads.has(key)) this.adminReads.set(key, readAt);
+    return { ...notification, read_at: this.adminReads.get(key) };
   }
 }
 
@@ -94,8 +121,8 @@ function fixture({ notifications = [], pool = readyPool } = {}) {
 }
 
 function token(userId, overrides = {}) {
-  const { issuer = config.jwtIssuer, audience = config.jwtAudience } = overrides;
-  return jwt.sign({ role: 'USER', status: 'ACTIVE' }, config.jwtSecret, {
+  const { issuer = config.jwtIssuer, audience = config.jwtAudience, role = 'USER' } = overrides;
+  return jwt.sign({ role, status: 'ACTIVE' }, config.jwtSecret, {
     subject: userId,
     issuer,
     audience,
@@ -193,9 +220,21 @@ test('POST /internal/v1/events enriches a hotel BOOKING_CREATED event with the r
     nights: 2,
     total_price: 2400000,
     title: 'Đặt phòng thành công',
-    message: 'Phòng Deluxe Skyline đã được xác nhận từ 20/10/2026 đến 22/10/2026.'
+    message: 'Phòng Deluxe Skyline đã được xác nhận từ 20/10/2026 đến 22/10/2026.',
+    admin_title: 'Có đơn đặt phòng mới',
+    admin_message: 'Đơn BK-ABC123 vừa được tạo cho phòng Deluxe Skyline từ 20/10/2026 đến 22/10/2026.'
   });
+  assert.equal(response.body.data.admin_visible, true);
   assert.equal(repository.notifications.length, 1);
+
+  const adminList = await request(app).get('/api/v1/notifications')
+    .set('Authorization', bearer(adminA, { role: 'ADMIN' }));
+  assert.equal(adminList.status, 200);
+  assert.equal(adminList.body.data.length, 1);
+  assert.equal(adminList.body.data[0].payload.title, 'Có đơn đặt phòng mới');
+  assert.equal(adminList.body.data[0].payload.message,
+    'Đơn BK-ABC123 vừa được tạo cho phòng Deluxe Skyline từ 20/10/2026 đến 22/10/2026.');
+  assert.equal(adminList.body.data[0].read_at, null);
 });
 
 test('POST /internal/v1/events enriches a hotel BOOKING_CREATED event without a room name', async () => {
@@ -243,15 +282,23 @@ test('POST /internal/v1/events uses the BOOKING_CREATED fallback message without
 test('POST /internal/v1/events returns the existing notification for a duplicate event_id', async () => {
   const { app, repository } = fixture();
   const first = await postEvent(app, validEvent());
+  const adminRead = await request(app).patch(`/api/v1/notifications/${first.body.data.id}/read`)
+    .set('Authorization', bearer(adminA, { role: 'ADMIN' }));
   const duplicate = await postEvent(app, validEvent({
     payload: { booking_id: aggregateId, title: 'This duplicate must not replace the original' }
   }));
+  const adminList = await request(app).get('/api/v1/notifications')
+    .set('Authorization', bearer(adminA, { role: 'ADMIN' }));
 
   assert.equal(first.status, 201);
+  assert.equal(adminRead.status, 200);
   assert.equal(duplicate.status, 200);
   assert.equal(duplicate.body.data.id, first.body.data.id);
   assert.deepEqual(duplicate.body.data.payload, first.body.data.payload);
+  assert.equal(adminList.body.data.length, 1);
+  assert.equal(adminList.body.data[0].read_at, readAt);
   assert.equal(repository.notifications.length, 1);
+  assert.equal(repository.adminReads.size, 1);
 });
 
 test('POST /internal/v1/events rejects a missing event_id', async () => {
@@ -306,13 +353,22 @@ test('POST /internal/v1/events rejects an unsupported event_type', async () => {
   assert.equal(response.body.error.code, 'VALIDATION_ERROR');
 });
 
-test('POST /internal/v1/events accepts a valid BOOKING_CANCELLED event', async () => {
+test('BOOKING_CANCELLED by the customer remains visible to the customer and becomes visible to admins', async () => {
   const { app, repository } = fixture();
   const response = await postEvent(app, validEvent({
     event_id: cancelledEventId,
     event_type: 'BOOKING_CANCELLED',
-    payload: { booking_id: aggregateId, booking_code: 'BK-ABC123', reason: 'Khách thay đổi kế hoạch' }
+    payload: {
+      booking_id: aggregateId,
+      booking_code: 'BK-ABC123',
+      reason: 'Khách thay đổi kế hoạch',
+      cancelled_by: 'USER'
+    }
   }));
+  const customerList = await request(app).get('/api/v1/notifications')
+    .set('Authorization', bearer(userA));
+  const adminList = await request(app).get('/api/v1/notifications')
+    .set('Authorization', bearer(adminA, { role: 'ADMIN' }));
 
   assert.equal(response.status, 201);
   assert.equal(response.body.data.type, 'BOOKING_CANCELLED');
@@ -320,9 +376,19 @@ test('POST /internal/v1/events accepts a valid BOOKING_CANCELLED event', async (
     booking_id: aggregateId,
     booking_code: 'BK-ABC123',
     reason: 'Khách thay đổi kế hoạch',
+    cancelled_by: 'USER',
     title: 'Đặt phòng đã bị hủy',
-    message: 'Đơn BK-ABC123 đã được hủy. Lý do: Khách thay đổi kế hoạch'
+    message: 'Đơn BK-ABC123 đã được hủy. Lý do: Khách thay đổi kế hoạch',
+    admin_title: 'Khách đã hủy đặt phòng',
+    admin_message: 'Đơn BK-ABC123 đã được khách hủy. Lý do: Khách thay đổi kế hoạch'
   });
+  assert.equal(response.body.data.admin_visible, true);
+  assert.equal(customerList.body.data[0].payload.title, 'Đặt phòng đã bị hủy');
+  assert.equal(customerList.body.data[0].payload.message,
+    'Đơn BK-ABC123 đã được hủy. Lý do: Khách thay đổi kế hoạch');
+  assert.equal(adminList.body.data[0].payload.title, 'Khách đã hủy đặt phòng');
+  assert.equal(adminList.body.data[0].payload.message,
+    'Đơn BK-ABC123 đã được khách hủy. Lý do: Khách thay đổi kế hoạch');
   assert.equal(repository.notifications.length, 1);
 });
 
@@ -339,21 +405,51 @@ test('POST /internal/v1/events uses the BOOKING_CANCELLED fallback message witho
   assert.equal(response.body.data.payload.booking_id, aggregateId);
 });
 
-test('POST /internal/v1/events preserves custom notification title and message', async () => {
+test('BOOKING_CANCELLED by an admin remains customer-only', async () => {
+  const { app } = fixture();
+  const response = await postEvent(app, validEvent({
+    event_id: cancelledEventId,
+    event_type: 'BOOKING_CANCELLED',
+    payload: {
+      booking_id: aggregateId,
+      booking_code: 'BK-ABC123',
+      reason: 'Phòng cần bảo trì',
+      cancelled_by: 'ADMIN'
+    }
+  }));
+  const customerList = await request(app).get('/api/v1/notifications')
+    .set('Authorization', bearer(userA));
+  const adminList = await request(app).get('/api/v1/notifications')
+    .set('Authorization', bearer(adminA, { role: 'ADMIN' }));
+
+  assert.equal(response.status, 201);
+  assert.equal(response.body.data.admin_visible, false);
+  assert.equal(customerList.body.data.length, 1);
+  assert.equal(customerList.body.data[0].payload.title, 'Đặt phòng đã bị hủy');
+  assert.equal(adminList.body.data.length, 0);
+});
+
+test('POST /internal/v1/events preserves custom customer and admin notification content', async () => {
   const { app } = fixture();
   const response = await postEvent(app, validEvent({
     payload: {
       booking_id: aggregateId,
       booking_date: '2026-10-07',
       title: 'Custom title',
-      message: 'Custom message'
+      message: 'Custom message',
+      admin_title: 'Custom admin title',
+      admin_message: 'Custom admin message'
     }
   }));
+  const adminList = await request(app).get('/api/v1/notifications')
+    .set('Authorization', bearer(adminA, { role: 'ADMIN' }));
 
   assert.equal(response.status, 201);
   assert.equal(response.body.data.payload.title, 'Custom title');
   assert.equal(response.body.data.payload.message, 'Custom message');
   assert.equal(response.body.data.payload.booking_date, '2026-10-07');
+  assert.equal(adminList.body.data[0].payload.title, 'Custom admin title');
+  assert.equal(adminList.body.data[0].payload.message, 'Custom admin message');
 });
 
 test('GET /api/v1/notifications rejects a missing bearer token with the error envelope', async () => {
@@ -392,6 +488,28 @@ test('GET /api/v1/notifications returns only notifications owned by the JWT subj
   assert.equal(response.body.data.length, 1);
   assert.equal(response.body.data[0].id, notificationId);
   assert.ok(response.body.data.every((item) => item.user_id === userA));
+});
+
+test('GET /api/v1/notifications gives admins visible events and their own private notifications only', async () => {
+  const visible = notification({ admin_visible: true });
+  const ownPrivate = notification({
+    id: otherNotificationId,
+    event_id: cancelledEventId,
+    user_id: adminA,
+    type: 'BOOKING_CANCELLED'
+  });
+  const otherPrivate = notification({
+    id: slotId,
+    event_id: roomId,
+    user_id: userB
+  });
+  const { app } = fixture({ notifications: [visible, ownPrivate, otherPrivate] });
+  const response = await request(app).get('/api/v1/notifications')
+    .set('Authorization', bearer(adminA, { role: 'ADMIN' }));
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body.data.map((item) => item.id), [notificationId, otherNotificationId]);
+  assert.ok(response.body.data.every((item) => item.admin_visible || item.user_id === adminA));
 });
 
 test('GET /api/v1/notifications rejects JWTs with the wrong issuer or audience', async () => {
@@ -449,6 +567,49 @@ test('PATCH /api/v1/notifications/:id/read sets read_at once for an owned notifi
   assert.equal(first.body.data.read_at, readAt);
   assert.equal(second.status, 200);
   assert.equal(second.body.data.read_at, first.body.data.read_at);
+});
+
+test('customer read state does not mark an admin-visible notification as read for an admin', async () => {
+  const { app } = fixture({ notifications: [notification({ admin_visible: true })] });
+  const customerRead = await request(app).patch(`/api/v1/notifications/${notificationId}/read`)
+    .set('Authorization', bearer(userA));
+  const adminList = await request(app).get('/api/v1/notifications')
+    .set('Authorization', bearer(adminA, { role: 'ADMIN' }));
+
+  assert.equal(customerRead.status, 200);
+  assert.equal(customerRead.body.data.read_at, readAt);
+  assert.equal(adminList.body.data[0].read_at, null);
+});
+
+test('admin read receipts are idempotent and isolated per admin and from the customer', async () => {
+  const { app, repository } = fixture({ notifications: [notification({ admin_visible: true })] });
+  const first = await request(app).patch(`/api/v1/notifications/${notificationId}/read`)
+    .set('Authorization', bearer(adminA, { role: 'ADMIN' }));
+  const second = await request(app).patch(`/api/v1/notifications/${notificationId}/read`)
+    .set('Authorization', bearer(adminA, { role: 'ADMIN' }));
+  const customerList = await request(app).get('/api/v1/notifications')
+    .set('Authorization', bearer(userA));
+  const adminBList = await request(app).get('/api/v1/notifications')
+    .set('Authorization', bearer(adminB, { role: 'ADMIN' }));
+
+  assert.equal(first.status, 200);
+  assert.equal(first.body.data.read_at, readAt);
+  assert.equal(second.body.data.read_at, first.body.data.read_at);
+  assert.equal(customerList.body.data[0].read_at, null);
+  assert.equal(adminBList.body.data[0].read_at, null);
+  assert.equal(repository.notifications[0].read_at, null);
+  assert.equal(repository.adminReads.size, 1);
+});
+
+test('admin cannot mark another user private notification as read', async () => {
+  const { app } = fixture({
+    notifications: [notification({ user_id: userB, admin_visible: false })]
+  });
+  const response = await request(app).patch(`/api/v1/notifications/${notificationId}/read`)
+    .set('Authorization', bearer(adminA, { role: 'ADMIN' }));
+
+  assert.equal(response.status, 404);
+  assert.equal(response.body.error.code, 'NOTIFICATION_NOT_FOUND');
 });
 
 test('PATCH /api/v1/notifications/:id/read returns 404 for a missing notification', async () => {
