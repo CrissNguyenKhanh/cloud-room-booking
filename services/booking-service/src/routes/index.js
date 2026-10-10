@@ -12,21 +12,7 @@ export function createRoutes({ controller, pool, config }) {
   router.get(
     "/ready",
     asyncHandler(async (_req, res) => {
-      await Promise.race([
-        pool.query("SELECT 1"),
-        new Promise((_, reject) =>
-          setTimeout(
-            () =>
-              reject(
-                Object.assign(new Error("Database readiness timeout"), {
-                  status: 503,
-                  code: "DATABASE_NOT_READY",
-                }),
-              ),
-            2000,
-          ),
-        ),
-      ]);
+      await pool.query("SELECT 1");
       res.json({ status: "ready", service: config.serviceName });
     }),
   );
@@ -57,6 +43,11 @@ export function createRoutes({ controller, pool, config }) {
     "/api/v1/admin/rooms",
     ...admin,
     asyncHandler(controller.createRoom),
+  );
+  router.get(
+    "/api/v1/admin/rooms",
+    ...admin,
+    asyncHandler(controller.listAdminRooms),
   );
   router.patch(
     "/api/v1/admin/rooms/:id",

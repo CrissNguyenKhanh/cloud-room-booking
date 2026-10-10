@@ -174,7 +174,13 @@ export class BookingService {
 
   // ---------- Admin ----------
   async listAllBookings(query) {
-    const { bookings, total } = await this.repository.listBookings(query);
+    const { bookings, total } = await this.repository.listBookings({
+      status: query.status,
+      roomId: query.room_id,
+      userId: query.user_id,
+      page: query.page,
+      limit: query.limit
+    });
     return { data: bookings, meta: { page: query.page, limit: query.limit, total } };
   }
   async createRoom(data) {

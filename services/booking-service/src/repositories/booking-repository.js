@@ -21,9 +21,10 @@ export class BookingRepository {
   }
 
   // ---------- Phòng ----------
-  async listRooms() {
-    const { rows } = await this.pool.query(`SELECT r.* FROM booking.rooms r WHERE r.active = true
-      ORDER BY r.featured DESC, r.room_number`);
+  async listRooms({ includeInactive = false } = {}) {
+    const { rows } = await this.pool.query(`SELECT r.* FROM booking.rooms r
+      WHERE ($1::boolean OR r.active = true)
+      ORDER BY r.featured DESC, r.room_number`, [includeInactive]);
     return rows;
   }
   async getRoom(id, includeInactive = false) {
