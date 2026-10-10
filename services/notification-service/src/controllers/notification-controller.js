@@ -15,9 +15,9 @@ export const createNotificationController = (service) => ({
     const result = await service.receive(eventSchema.parse(req.body));
     res.status(result.created ? 201 : 200).json({ data: result.notification });
   },
-  list: async (req, res) => res.json({ data: await service.list(req.user.id) }),
+  list: async (req, res) => res.json({ data: await service.list(req.user) }),
   markRead: async (req, res) =>
     res.json({
-      data: await service.markRead(uuid.parse(req.params.id), req.user.id),
+      data: await service.markRead(uuid.parse(req.params.id), req.user),
     }),
 });
