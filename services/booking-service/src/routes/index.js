@@ -35,6 +35,16 @@ export function createRoutes({ controller, pool, config }) {
     asyncHandler(controller.getMyBooking),
   );
   router.post(
+    "/api/v1/bookings/:id/payments",
+    auth,
+    asyncHandler(controller.createPayment),
+  );
+  router.get(
+    "/api/v1/bookings/:id/payment",
+    auth,
+    asyncHandler(controller.getPayment),
+  );
+  router.post(
     "/api/v1/bookings/:id/cancel",
     auth,
     asyncHandler(controller.cancelMine),
