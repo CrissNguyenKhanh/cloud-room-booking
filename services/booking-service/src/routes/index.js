@@ -2,7 +2,7 @@ import { Router } from "express";
 import { asyncHandler } from "../utils/errors.js";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
 
-export function createRoutes({ controller, pool, config }) {
+export function createRoutes({ controller, mediaController, pool, config }) {
   const router = Router();
   const auth = authMiddleware(config);
   const admin = [auth, requireRole("ADMIN")];
@@ -18,6 +18,10 @@ export function createRoutes({ controller, pool, config }) {
   );
   router.get("/api/v1/rooms", asyncHandler(controller.listRooms));
   router.get("/api/v1/rooms/search", asyncHandler(controller.searchRooms));
+  router.get(
+    "/api/v1/rooms/:id/media",
+    asyncHandler(mediaController.listPublicMedia),
+  );
   router.get("/api/v1/rooms/:id", asyncHandler(controller.getRoom));
   router.get(
     "/api/v1/rooms/:id/unavailable-dates",
@@ -63,6 +67,31 @@ export function createRoutes({ controller, pool, config }) {
     "/api/v1/admin/rooms/:id",
     ...admin,
     asyncHandler(controller.updateRoom),
+  );
+  router.post(
+    "/api/v1/admin/rooms/:id/media",
+    ...admin,
+    asyncHandler(mediaController.uploadMedia),
+  );
+  router.get(
+    "/api/v1/admin/rooms/:id/media",
+    ...admin,
+    asyncHandler(mediaController.listMedia),
+  );
+  router.put(
+    "/api/v1/admin/rooms/:id/media/:mediaId/file",
+    ...admin,
+    asyncHandler(mediaController.replaceMediaFile),
+  );
+  router.patch(
+    "/api/v1/admin/rooms/:id/media/:mediaId",
+    ...admin,
+    asyncHandler(mediaController.updateMedia),
+  );
+  router.delete(
+    "/api/v1/admin/rooms/:id/media/:mediaId",
+    ...admin,
+    asyncHandler(mediaController.deleteMedia),
   );
   router.get(
     "/api/v1/admin/bookings",

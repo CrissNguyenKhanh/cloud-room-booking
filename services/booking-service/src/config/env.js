@@ -1,6 +1,12 @@
 import "dotenv/config";
 import { z } from "zod";
 
+const optionalText = z
+  .string()
+  .trim()
+  .transform((value) => (value === "" ? undefined : value))
+  .optional();
+
 const schema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "production"])
@@ -23,6 +29,26 @@ const schema = z.object({
   NOTIFICATION_TIMEOUT_MS: z.coerce.number().int().positive().default(2000),
   OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().positive().max(20).default(5),
   OUTBOX_BATCH_SIZE: z.coerce.number().int().positive().max(100).default(20),
+  CLOUDINARY_CLOUD_NAME: optionalText,
+  CLOUDINARY_API_KEY: optionalText,
+  CLOUDINARY_API_SECRET: optionalText,
+  CLOUDINARY_FOLDER: optionalText,
+  MEDIA_MAX_IMAGE_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(5 * 1024 * 1024),
+  MEDIA_MAX_VIDEO_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(30 * 1024 * 1024),
+  MEDIA_MAX_PER_ROOM: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(100)
+    .default(20),
 });
 
 export function loadConfig(env = process.env) {
@@ -50,6 +76,20 @@ export function loadConfig(env = process.env) {
     notificationTimeoutMs: data.NOTIFICATION_TIMEOUT_MS,
     outboxMaxAttempts: data.OUTBOX_MAX_ATTEMPTS,
     outboxBatchSize: data.OUTBOX_BATCH_SIZE,
+    cloudinary:
+      data.CLOUDINARY_CLOUD_NAME &&
+      data.CLOUDINARY_API_KEY &&
+      data.CLOUDINARY_API_SECRET
+        ? {
+            cloudName: data.CLOUDINARY_CLOUD_NAME,
+            apiKey: data.CLOUDINARY_API_KEY,
+            apiSecret: data.CLOUDINARY_API_SECRET,
+            folder: data.CLOUDINARY_FOLDER ?? "cloud-room-booking",
+          }
+        : null,
+    mediaMaxImageBytes: data.MEDIA_MAX_IMAGE_BYTES,
+    mediaMaxVideoBytes: data.MEDIA_MAX_VIDEO_BYTES,
+    mediaMaxPerRoom: data.MEDIA_MAX_PER_ROOM,
     serviceName: "booking-service",
   };
 }

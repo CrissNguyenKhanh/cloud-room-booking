@@ -233,4 +233,168 @@ export class BookingRepository {
       next_retry_at = $4, last_error = $5, updated_at = now() WHERE event_id = $1`,
     [id, attempts, status, nextRetryAt, String(error).slice(0, 500)]);
   }
+
+  // ---------- Room media ----------
+  // Writers lock the room row so ordering and the single-cover invariant are
+  // serialized for concurrent changes to the same room.
+  async listMedia(roomId) {
+    const { rows } = await this.pool.query(`SELECT * FROM booking.room_media WHERE room_id = $1
+      ORDER BY is_cover DESC, sort_order, created_at`, [roomId]);
+    return rows;
+  }
+
+  async getMedia(roomId, mediaId) {
+    const { rows } = await this.pool.query(
+      'SELECT * FROM booking.room_media WHERE id = $1 AND room_id = $2',
+      [mediaId, roomId],
+    );
+    return rows[0] || null;
+  }
+
+  async addMedia(roomId, data, maxPerRoom) {
+    return this.transaction(async (db) => {
+      const room = await db.query(
+        'SELECT id FROM booking.rooms WHERE id = $1 FOR UPDATE',
+        [roomId],
+      );
+      if (!room.rowCount) return { outcome: 'ROOM_NOT_FOUND' };
+
+      const { rows: [stats] } = await db.query(`SELECT count(*)::int AS total,
+        COALESCE(max(sort_order), 0) AS max_order,
+        COALESCE(bool_or(is_cover), false) AS has_cover
+        FROM booking.room_media WHERE room_id = $1`, [roomId]);
+      if (stats.total >= maxPerRoom) return { outcome: 'LIMIT_REACHED' };
+
+      const { rows } = await db.query(`INSERT INTO booking.room_media
+        (room_id, media_type, url, thumbnail_url, public_id, format, bytes, width,
+         height, duration_seconds, alt_text, sort_order, is_cover)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        RETURNING *`, [
+        roomId,
+        data.media_type,
+        data.url,
+        data.thumbnail_url ?? null,
+        data.public_id,
+        data.format ?? null,
+        data.bytes ?? null,
+        data.width ?? null,
+        data.height ?? null,
+        data.duration_seconds ?? null,
+        data.alt_text ?? '',
+        stats.max_order + 1,
+        data.media_type === 'image' && !stats.has_cover,
+      ]);
+      return { outcome: 'OK', media: rows[0] };
+    });
+  }
+
+  async updateMedia(roomId, mediaId, data) {
+    return this.transaction(async (db) => {
+      const room = await db.query(
+        'SELECT id FROM booking.rooms WHERE id = $1 FOR UPDATE',
+        [roomId],
+      );
+      if (!room.rowCount) return { outcome: 'ROOM_NOT_FOUND' };
+
+      const { rows: [current] } = await db.query(
+        'SELECT * FROM booking.room_media WHERE id = $1 AND room_id = $2 FOR UPDATE',
+        [mediaId, roomId],
+      );
+      if (!current) return { outcome: 'MEDIA_NOT_FOUND' };
+      if (data.is_cover === true) {
+        if (current.media_type !== 'image') return { outcome: 'NOT_IMAGE' };
+        await db.query(`UPDATE booking.room_media SET is_cover = false, updated_at = now()
+          WHERE room_id = $1 AND is_cover AND id <> $2`, [roomId, mediaId]);
+      }
+
+      const { rows } = await db.query(`UPDATE booking.room_media
+        SET alt_text = COALESCE($3, alt_text), sort_order = COALESCE($4, sort_order),
+          is_cover = COALESCE($5, is_cover), updated_at = now()
+        WHERE id = $1 AND room_id = $2 RETURNING *`, [
+        mediaId,
+        roomId,
+        data.alt_text ?? null,
+        data.sort_order ?? null,
+        data.is_cover ?? null,
+      ]);
+      return { outcome: 'OK', media: rows[0] };
+    });
+  }
+
+  async replaceMediaFile(roomId, mediaId, data) {
+    return this.transaction(async (db) => {
+      const room = await db.query(
+        'SELECT id FROM booking.rooms WHERE id = $1 FOR UPDATE',
+        [roomId],
+      );
+      if (!room.rowCount) return { outcome: 'ROOM_NOT_FOUND' };
+
+      const { rows: [current] } = await db.query(
+        'SELECT * FROM booking.room_media WHERE id = $1 AND room_id = $2 FOR UPDATE',
+        [mediaId, roomId],
+      );
+      if (!current) return { outcome: 'MEDIA_NOT_FOUND' };
+
+      const { rows } = await db.query(`UPDATE booking.room_media
+        SET media_type = $3, url = $4, thumbnail_url = $5, public_id = $6,
+          format = $7, bytes = $8, width = $9, height = $10,
+          duration_seconds = $11, alt_text = COALESCE($12, alt_text),
+          is_cover = CASE WHEN $3 = 'video' THEN false ELSE is_cover END,
+          updated_at = now()
+        WHERE id = $1 AND room_id = $2 RETURNING *`, [
+        mediaId,
+        roomId,
+        data.media_type,
+        data.url,
+        data.thumbnail_url ?? null,
+        data.public_id,
+        data.format ?? null,
+        data.bytes ?? null,
+        data.width ?? null,
+        data.height ?? null,
+        data.duration_seconds ?? null,
+        data.alt_text ?? null,
+      ]);
+      let updated = rows[0];
+
+      if (current.is_cover && data.media_type === 'video') {
+        await db.query(`UPDATE booking.room_media SET is_cover = true, updated_at = now()
+          WHERE id = (SELECT id FROM booking.room_media
+            WHERE room_id = $1 AND media_type = 'image'
+            ORDER BY sort_order, created_at LIMIT 1)`, [roomId]);
+      } else if (data.media_type === 'image') {
+        const { rows: coverRows } = await db.query(`UPDATE booking.room_media
+          SET is_cover = true, updated_at = now()
+          WHERE id = $2 AND NOT EXISTS (
+            SELECT 1 FROM booking.room_media WHERE room_id = $1 AND is_cover
+          ) RETURNING *`, [roomId, mediaId]);
+        if (coverRows[0]) updated = coverRows[0];
+      }
+
+      return { outcome: 'OK', media: updated, previous: current };
+    });
+  }
+
+  async deleteMedia(roomId, mediaId) {
+    return this.transaction(async (db) => {
+      const room = await db.query(
+        'SELECT id FROM booking.rooms WHERE id = $1 FOR UPDATE',
+        [roomId],
+      );
+      if (!room.rowCount) return { outcome: 'ROOM_NOT_FOUND' };
+
+      const { rows: [deleted] } = await db.query(
+        'DELETE FROM booking.room_media WHERE id = $1 AND room_id = $2 RETURNING *',
+        [mediaId, roomId],
+      );
+      if (!deleted) return { outcome: 'MEDIA_NOT_FOUND' };
+      if (deleted.is_cover) {
+        await db.query(`UPDATE booking.room_media SET is_cover = true, updated_at = now()
+          WHERE id = (SELECT id FROM booking.room_media
+            WHERE room_id = $1 AND media_type = 'image'
+            ORDER BY sort_order, created_at LIMIT 1)`, [roomId]);
+      }
+      return { outcome: 'OK', media: deleted };
+    });
+  }
 }
