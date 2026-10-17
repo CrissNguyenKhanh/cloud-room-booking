@@ -1,3 +1,5 @@
+// services/booking-service/src/repositories/booking-repository.js
+
 // Các cột trả về cho khách (không có request_hash / idempotency_key).
 const BOOKING_COLUMNS = `b.id, b.booking_code, b.room_id, r.room_number, r.name AS room_name, r.room_type,
   b.user_id, b.status, b.check_in_date, b.check_out_date, b.nights, b.guests, b.price_per_night, b.total_price,
@@ -21,16 +23,19 @@ export class BookingRepository {
   }
 
   // ---------- Phòng ----------
-  async listRooms() {
-    const { rows } = await this.pool.query(`SELECT r.* FROM booking.rooms r WHERE r.active = true
-      ORDER BY r.featured DESC, r.room_number`);
+  async listRooms({ includeInactive = false } = {}) {
+    const { rows } = await this.pool.query(`SELECT r.* FROM booking.rooms r
+      WHERE ($1::boolean OR r.active = true)
+      ORDER BY r.featured DESC, r.room_number`, [includeInactive]);
     return rows;
   }
+
   async getRoom(id, includeInactive = false) {
     const { rows } = await this.pool.query(`SELECT r.* FROM booking.rooms r
       WHERE r.id = $1 AND ($2::boolean OR r.active = true)`, [id, includeInactive]);
     return rows[0] || null;
   }
+
   // Tìm phòng đang hoạt động. Nếu có check_in/check_out thì loại phòng đã có đơn CONFIRMED chồng khoảng ngày [in, out).
   async searchRooms(filters) {
     const { rows } = await this.pool.query(`SELECT r.*, count(*) OVER()::int AS total_count
@@ -50,6 +55,7 @@ export class BookingRepository {
       filters.checkIn ?? null, filters.checkOut ?? null, filters.limit, (filters.page - 1) * filters.limit]);
     return { rooms: rows.map(({ total_count: _total, ...room }) => room), total: rows[0]?.total_count ?? 0 };
   }
+
   async isRoomAvailable(roomId, checkIn, checkOut) {
     const { rows } = await this.pool.query(`SELECT NOT EXISTS (
       SELECT 1 FROM booking.bookings b WHERE b.room_id = $1 AND b.status = 'CONFIRMED'
@@ -57,6 +63,7 @@ export class BookingRepository {
     [roomId, checkIn, checkOut]);
     return rows[0].available;
   }
+
   // Các khoảng đã đặt (CONFIRMED) của một phòng chồng lên cửa sổ [from, to).
   async listBookedRanges(roomId, from, to) {
     const { rows } = await this.pool.query(`SELECT b.check_in_date, b.check_out_date
@@ -65,6 +72,7 @@ export class BookingRepository {
       ORDER BY b.check_in_date`, [roomId, from, to]);
     return rows;
   }
+
   async findActiveRoom(db, id) {
     const { rows } = await db.query(`SELECT id, room_number, name, capacity, price_per_night
       FROM booking.rooms WHERE id = $1 AND active = true`, [id]);
@@ -77,6 +85,7 @@ export class BookingRepository {
       WHERE b.user_id = $1 AND b.idempotency_key = $2 ${lock ? 'FOR UPDATE OF b' : ''}`, [userId, key]);
     return rows[0] || null;
   }
+
   async insertBooking(db, data) {
     const { rows } = await db.query(`INSERT INTO booking.bookings
       (room_id, user_id, status, idempotency_key, request_hash, booking_code,
@@ -86,10 +95,12 @@ export class BookingRepository {
       data.checkInDate, data.checkOutDate, data.guests, data.nights, data.pricePerNight, data.totalPrice]);
     return this.getBookingView(db, rows[0].id);
   }
+
   async getBookingView(db, id) {
     const { rows } = await db.query(`SELECT ${BOOKING_COLUMNS} ${BOOKING_FROM} WHERE b.id = $1`, [id]);
     return rows[0] || null;
   }
+
   async listMine(userId, { status, when, today, page, limit }) {
     // when = upcoming: sắp tới xếp tăng dần theo ngày nhận; còn lại xếp mới nhất trước.
     const { rows } = await this.pool.query(`SELECT ${BOOKING_COLUMNS}, count(*) OVER()::int AS total_count ${BOOKING_FROM}
@@ -103,15 +114,18 @@ export class BookingRepository {
     [userId, status ?? null, when ?? null, today, limit, (page - 1) * limit]);
     return { bookings: rows.map(({ total_count: _total, ...booking }) => booking), total: rows[0]?.total_count ?? 0 };
   }
+
   async findBooking(db, id) {
     const { rows } = await db.query('SELECT * FROM booking.bookings WHERE id = $1 FOR UPDATE', [id]);
     return rows[0] || null;
   }
+
   async markCancelled(db, id, reason) {
     await db.query(`UPDATE booking.bookings SET status = 'CANCELLED', cancel_reason = $2,
       updated_at = now() WHERE id = $1`, [id, reason]);
     return this.getBookingView(db, id);
   }
+
   async listBookings({ status, roomId, userId, page, limit }) {
     const { rows } = await this.pool.query(`SELECT ${BOOKING_COLUMNS}, count(*) OVER()::int AS total_count ${BOOKING_FROM}
       WHERE ($1::text IS NULL OR b.status = $1) AND ($2::uuid IS NULL OR b.room_id = $2)
@@ -132,6 +146,7 @@ export class BookingRepository {
       data.description, JSON.stringify(data.palette), data.active]);
     return rows[0];
   }
+
   async updateRoom(id, data) {
     const json = (value) => (value === undefined ? null : JSON.stringify(value));
     const { rows } = await this.pool.query(`UPDATE booking.rooms SET
@@ -155,25 +170,163 @@ export class BookingRepository {
       VALUES ($1, $2, $3, $4) RETURNING *`, [eventType, aggregateId, userId, payload]);
     return rows[0];
   }
+
   async getOutbox(id) {
     const { rows } = await this.pool.query('SELECT * FROM booking.outbox_events WHERE event_id = $1', [id]);
     return rows[0] || null;
   }
+
   async listOutbox() {
     const { rows } = await this.pool.query('SELECT * FROM booking.outbox_events ORDER BY created_at DESC LIMIT 200');
     return rows;
   }
+
   async listDueOutbox(limit) {
     const { rows } = await this.pool.query(`SELECT * FROM booking.outbox_events WHERE status = 'PENDING'
       AND next_retry_at <= now() ORDER BY created_at LIMIT $1`, [limit]);
     return rows;
   }
+
   async markOutboxSent(id) {
     await this.pool.query(`UPDATE booking.outbox_events SET status = 'SENT', last_error = NULL, updated_at = now() WHERE event_id = $1`, [id]);
   }
+
   async markOutboxFailure(id, { attempts, status, nextRetryAt, error }) {
     await this.pool.query(`UPDATE booking.outbox_events SET attempts = $2, status = $3,
       next_retry_at = $4, last_error = $5, updated_at = now() WHERE event_id = $1`,
     [id, attempts, status, nextRetryAt, String(error).slice(0, 500)]);
+  }
+
+  // ---------- Media phòng (ảnh / video) ----------
+  // Các thao tác ghi khóa dòng phòng (FOR UPDATE) để upload, sửa, xóa cùng một phòng chạy lần lượt,
+  // nhờ vậy thứ tự hiển thị và ảnh bìa không bị lệch khi nhiều request đến cùng lúc.
+  async listMedia(roomId) {
+    const { rows } = await this.pool.query(`SELECT * FROM booking.room_media WHERE room_id = $1
+      ORDER BY is_cover DESC, sort_order, created_at`, [roomId]);
+    return rows;
+  }
+
+  async getMedia(roomId, mediaId) {
+    const { rows } = await this.pool.query('SELECT * FROM booking.room_media WHERE id = $1 AND room_id = $2', [mediaId, roomId]);
+    return rows[0] || null;
+  }
+
+  // Trả { outcome: 'OK' | 'ROOM_NOT_FOUND' | 'LIMIT_REACHED', media }.
+  // Ảnh đầu tiên của phòng tự động thành ảnh bìa.
+  async addMedia(roomId, data, maxPerRoom) {
+    return this.transaction(async (db) => {
+      const room = await db.query('SELECT id FROM booking.rooms WHERE id = $1 FOR UPDATE', [roomId]);
+      if (!room.rowCount) return { outcome: 'ROOM_NOT_FOUND' };
+      const { rows: [stats] } = await db.query(`SELECT count(*)::int AS total, COALESCE(max(sort_order), 0) AS max_order,
+        COALESCE(bool_or(is_cover), false) AS has_cover FROM booking.room_media WHERE room_id = $1`, [roomId]);
+      if (stats.total >= maxPerRoom) return { outcome: 'LIMIT_REACHED' };
+      const { rows } = await db.query(`INSERT INTO booking.room_media (room_id, media_type, url, thumbnail_url, public_id,
+          format, bytes, width, height, duration_seconds, alt_text, sort_order, is_cover)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
+      [roomId, data.media_type, data.url, data.thumbnail_url ?? null, data.public_id, data.format ?? null,
+        data.bytes ?? null, data.width ?? null, data.height ?? null, data.duration_seconds ?? null,
+        data.alt_text ?? '', stats.max_order + 1, data.media_type === 'image' && !stats.has_cover]);
+      return { outcome: 'OK', media: rows[0] };
+    });
+  }
+
+  // data: { alt_text?, sort_order?, is_cover? }. Đặt ảnh bìa mới thì ảnh bìa cũ tự bị gỡ.
+  // Trả { outcome: 'OK' | 'ROOM_NOT_FOUND' | 'MEDIA_NOT_FOUND' | 'NOT_IMAGE', media }.
+  async updateMedia(roomId, mediaId, data) {
+    return this.transaction(async (db) => {
+      const room = await db.query('SELECT id FROM booking.rooms WHERE id = $1 FOR UPDATE', [roomId]);
+      if (!room.rowCount) return { outcome: 'ROOM_NOT_FOUND' };
+      const { rows: [current] } = await db.query('SELECT * FROM booking.room_media WHERE id = $1 AND room_id = $2 FOR UPDATE', [mediaId, roomId]);
+      if (!current) return { outcome: 'MEDIA_NOT_FOUND' };
+      if (data.is_cover === true) {
+        if (current.media_type !== 'image') return { outcome: 'NOT_IMAGE' };
+        await db.query('UPDATE booking.room_media SET is_cover = false, updated_at = now() WHERE room_id = $1 AND is_cover AND id <> $2', [roomId, mediaId]);
+      }
+      const { rows } = await db.query(`UPDATE booking.room_media SET alt_text = COALESCE($2, alt_text),
+        sort_order = COALESCE($3, sort_order), is_cover = COALESCE($4, is_cover), updated_at = now()
+        WHERE id = $1 RETURNING *`, [mediaId, data.alt_text ?? null, data.sort_order ?? null, data.is_cover ?? null]);
+      return { outcome: 'OK', media: rows[0] };
+    });
+  }
+
+  // Thay file media nhưng giữ nguyên id (mediaId).
+  // File mới đã được upload lên Cloudinary trước khi gọi phương thức này.
+  // Trả { outcome: 'OK' | 'ROOM_NOT_FOUND' | 'MEDIA_NOT_FOUND', media, previous }.
+  async replaceMediaFile(roomId, mediaId, data) {
+    return this.transaction(async (db) => {
+      const room = await db.query(
+        'SELECT id FROM booking.rooms WHERE id = $1 FOR UPDATE',
+        [roomId]
+      );
+      if (!room.rowCount) return { outcome: 'ROOM_NOT_FOUND' };
+
+      const { rows: [current] } = await db.query(
+        'SELECT * FROM booking.room_media WHERE id = $1 AND room_id = $2 FOR UPDATE',
+        [mediaId, roomId]
+      );
+      if (!current) return { outcome: 'MEDIA_NOT_FOUND' };
+
+      const { rows: [updated] } = await db.query(`
+        UPDATE booking.room_media
+        SET media_type = $3,
+            url = $4,
+            thumbnail_url = $5,
+            public_id = $6,
+            format = $7,
+            bytes = $8,
+            width = $9,
+            height = $10,
+            duration_seconds = $11,
+            alt_text = COALESCE($12, alt_text),
+            is_cover = CASE WHEN $3 = 'video' THEN false ELSE is_cover END,
+            updated_at = now()
+        WHERE id = $1 AND room_id = $2
+        RETURNING *`, [
+        mediaId,
+        roomId,
+        data.media_type,
+        data.url,
+        data.thumbnail_url ?? null,
+        data.public_id,
+        data.format ?? null,
+        data.bytes ?? null,
+        data.width ?? null,
+        data.height ?? null,
+        data.duration_seconds ?? null,
+        data.alt_text ?? null
+      ]);
+
+      // Nếu file cũ là ảnh bìa nhưng file mới là video, chọn ảnh khác làm ảnh bìa.
+      if (current.is_cover && data.media_type === 'video') {
+        await db.query(`
+          UPDATE booking.room_media
+          SET is_cover = true, updated_at = now()
+          WHERE id = (
+            SELECT id
+            FROM booking.room_media
+            WHERE room_id = $1 AND media_type = 'image'
+            ORDER BY sort_order, created_at
+            LIMIT 1
+          )`, [roomId]);
+      }
+
+      return { outcome: 'OK', media: updated, previous: current };
+    });
+  }
+
+  // Trả { outcome: 'OK' | 'ROOM_NOT_FOUND' | 'MEDIA_NOT_FOUND', media } (media là dòng đã xóa, có public_id để xóa trên Cloudinary).
+  // Nếu xóa đúng ảnh bìa thì ảnh kế tiếp (theo sort_order) tự làm ảnh bìa.
+  async deleteMedia(roomId, mediaId) {
+    return this.transaction(async (db) => {
+      const room = await db.query('SELECT id FROM booking.rooms WHERE id = $1 FOR UPDATE', [roomId]);
+      if (!room.rowCount) return { outcome: 'ROOM_NOT_FOUND' };
+      const { rows: [deleted] } = await db.query('DELETE FROM booking.room_media WHERE id = $1 AND room_id = $2 RETURNING *', [mediaId, roomId]);
+      if (!deleted) return { outcome: 'MEDIA_NOT_FOUND' };
+      if (deleted.is_cover) {
+        await db.query(`UPDATE booking.room_media SET is_cover = true, updated_at = now() WHERE id = (
+          SELECT id FROM booking.room_media WHERE room_id = $1 AND media_type = 'image' ORDER BY sort_order, created_at LIMIT 1)`, [roomId]);
+      }
+      return { outcome: 'OK', media: deleted };
+    });
   }
 }
