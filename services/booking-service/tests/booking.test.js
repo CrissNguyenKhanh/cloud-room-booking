@@ -88,6 +88,7 @@ class FakeRepository {
   }
   async findBooking(_db, id) { return this.bookings.find((b) => b.id === id) || null; }
   async markCancelled(_db, id, reason) { const booking = this.bookings.find((b) => b.id === id); booking.status = 'CANCELLED'; booking.cancel_reason = reason; return booking; }
+  async hasSuccessfulPayment() { return false; }
   async getOutbox(id) { return this.outbox.find((event) => event.event_id === id) || null; }
   async listDueOutbox() { return this.outbox.filter((event) => event.status === 'PENDING'); }
   async markOutboxSent(id) { this.outbox.find((event) => event.event_id === id).status = 'SENT'; }

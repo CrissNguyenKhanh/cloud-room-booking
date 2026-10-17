@@ -2,7 +2,7 @@ import { Router } from "express";
 import { asyncHandler } from "../utils/errors.js";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
 
-export function createRoutes({ controller, pool, config }) {
+export function createRoutes({ controller, mediaController, reviewController, pool, config }) {
   const router = Router();
   const auth = authMiddleware(config);
   const admin = [auth, requireRole("ADMIN")];
@@ -18,6 +18,14 @@ export function createRoutes({ controller, pool, config }) {
   );
   router.get("/api/v1/rooms", asyncHandler(controller.listRooms));
   router.get("/api/v1/rooms/search", asyncHandler(controller.searchRooms));
+  router.get(
+    "/api/v1/rooms/:id/media",
+    asyncHandler(mediaController.listPublicMedia),
+  );
+  router.get(
+    "/api/v1/rooms/:id/reviews",
+    asyncHandler(reviewController.roomReviews),
+  );
   router.get("/api/v1/rooms/:id", asyncHandler(controller.getRoom));
   router.get(
     "/api/v1/rooms/:id/unavailable-dates",
@@ -35,9 +43,44 @@ export function createRoutes({ controller, pool, config }) {
     asyncHandler(controller.getMyBooking),
   );
   router.post(
+    "/api/v1/bookings/:id/payments",
+    auth,
+    asyncHandler(controller.createPayment),
+  );
+  router.get(
+    "/api/v1/bookings/:id/payment",
+    auth,
+    asyncHandler(controller.getPayment),
+  );
+  router.post(
+    "/api/v1/bookings/:id/review",
+    auth,
+    asyncHandler(reviewController.createReview),
+  );
+  router.get(
+    "/api/v1/bookings/:id/review",
+    auth,
+    asyncHandler(reviewController.getBookingReview),
+  );
+  router.post(
     "/api/v1/bookings/:id/cancel",
     auth,
     asyncHandler(controller.cancelMine),
+  );
+  router.get(
+    "/api/v1/reviews/me",
+    auth,
+    asyncHandler(reviewController.myReviews),
+  );
+  router.patch(
+    "/api/v1/reviews/:id",
+    auth,
+    asyncHandler(reviewController.updateReview),
+  );
+  router.delete(
+    "/api/v1/reviews/:id",
+    auth,
+    asyncHandler(reviewController.deleteReview),
   );
   router.post(
     "/api/v1/admin/rooms",
@@ -54,6 +97,31 @@ export function createRoutes({ controller, pool, config }) {
     ...admin,
     asyncHandler(controller.updateRoom),
   );
+  router.post(
+    "/api/v1/admin/rooms/:id/media",
+    ...admin,
+    asyncHandler(mediaController.uploadMedia),
+  );
+  router.get(
+    "/api/v1/admin/rooms/:id/media",
+    ...admin,
+    asyncHandler(mediaController.listMedia),
+  );
+  router.put(
+    "/api/v1/admin/rooms/:id/media/:mediaId/file",
+    ...admin,
+    asyncHandler(mediaController.replaceMediaFile),
+  );
+  router.patch(
+    "/api/v1/admin/rooms/:id/media/:mediaId",
+    ...admin,
+    asyncHandler(mediaController.updateMedia),
+  );
+  router.delete(
+    "/api/v1/admin/rooms/:id/media/:mediaId",
+    ...admin,
+    asyncHandler(mediaController.deleteMedia),
+  );
   router.get(
     "/api/v1/admin/bookings",
     ...admin,
@@ -63,6 +131,16 @@ export function createRoutes({ controller, pool, config }) {
     "/api/v1/admin/bookings/:id/cancel",
     ...admin,
     asyncHandler(controller.cancelAdmin),
+  );
+  router.get(
+    "/api/v1/admin/reviews",
+    ...admin,
+    asyncHandler(reviewController.listReviewsAdmin),
+  );
+  router.patch(
+    "/api/v1/admin/reviews/:id/status",
+    ...admin,
+    asyncHandler(reviewController.setReviewStatus),
   );
   router.get(
     "/api/v1/admin/outbox",

@@ -8,4 +8,4 @@ COPY db ./db
 COPY scripts ./scripts
 USER node
 EXPOSE 3000
-CMD ["node", "src/server.js"]
+CMD ["sh", "-c", "npm run migrate && npm run seed && exec node src/server.js"]
