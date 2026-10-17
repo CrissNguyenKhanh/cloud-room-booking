@@ -99,7 +99,7 @@ const roomUpdateSchema = z.object(Object.fromEntries(
 const idempotencySchema = z.string().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/);
 const paymentSchema = z.object({ provider: z.literal('MOCK').optional() }).strict();
 
-export function createBookingController({ bookingService, paymentService, repository, dispatcher }) {
+export function createBookingController({ bookingService, paymentService, reviewService, repository, dispatcher }) {
   async function dispatchAfterCommit(eventId, requestId) {
     if (!eventId) return;
     try { await dispatcher.dispatchById(eventId, requestId); }
@@ -134,7 +134,10 @@ export function createBookingController({ bookingService, paymentService, reposi
       res.status(result.replayed ? 200 : 201).json({ data: result.booking });
     },
     myBookings: async (req, res) => res.json(await bookingService.listMine(req.user.id, myBookingsQuerySchema.parse(req.query))),
-    getMyBooking: async (req, res) => res.json({ data: await bookingService.getMine(uuid.parse(req.params.id), req.user) }),
+    getMyBooking: async (req, res) => {
+      const booking = await bookingService.getMine(uuid.parse(req.params.id), req.user);
+      res.json({ data: { ...booking, ...(await reviewService.reviewState(booking)) } });
+    },
     createPayment: async (req, res) => {
       const key = idempotencySchema.parse(req.get('Idempotency-Key'));
       const payload = paymentSchema.parse(req.body ?? {});

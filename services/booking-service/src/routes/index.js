@@ -2,7 +2,7 @@ import { Router } from "express";
 import { asyncHandler } from "../utils/errors.js";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
 
-export function createRoutes({ controller, mediaController, pool, config }) {
+export function createRoutes({ controller, mediaController, reviewController, pool, config }) {
   const router = Router();
   const auth = authMiddleware(config);
   const admin = [auth, requireRole("ADMIN")];
@@ -21,6 +21,10 @@ export function createRoutes({ controller, mediaController, pool, config }) {
   router.get(
     "/api/v1/rooms/:id/media",
     asyncHandler(mediaController.listPublicMedia),
+  );
+  router.get(
+    "/api/v1/rooms/:id/reviews",
+    asyncHandler(reviewController.roomReviews),
   );
   router.get("/api/v1/rooms/:id", asyncHandler(controller.getRoom));
   router.get(
@@ -49,9 +53,34 @@ export function createRoutes({ controller, mediaController, pool, config }) {
     asyncHandler(controller.getPayment),
   );
   router.post(
+    "/api/v1/bookings/:id/review",
+    auth,
+    asyncHandler(reviewController.createReview),
+  );
+  router.get(
+    "/api/v1/bookings/:id/review",
+    auth,
+    asyncHandler(reviewController.getBookingReview),
+  );
+  router.post(
     "/api/v1/bookings/:id/cancel",
     auth,
     asyncHandler(controller.cancelMine),
+  );
+  router.get(
+    "/api/v1/reviews/me",
+    auth,
+    asyncHandler(reviewController.myReviews),
+  );
+  router.patch(
+    "/api/v1/reviews/:id",
+    auth,
+    asyncHandler(reviewController.updateReview),
+  );
+  router.delete(
+    "/api/v1/reviews/:id",
+    auth,
+    asyncHandler(reviewController.deleteReview),
   );
   router.post(
     "/api/v1/admin/rooms",
@@ -102,6 +131,16 @@ export function createRoutes({ controller, mediaController, pool, config }) {
     "/api/v1/admin/bookings/:id/cancel",
     ...admin,
     asyncHandler(controller.cancelAdmin),
+  );
+  router.get(
+    "/api/v1/admin/reviews",
+    ...admin,
+    asyncHandler(reviewController.listReviewsAdmin),
+  );
+  router.patch(
+    "/api/v1/admin/reviews/:id/status",
+    ...admin,
+    asyncHandler(reviewController.setReviewStatus),
   );
   router.get(
     "/api/v1/admin/outbox",
