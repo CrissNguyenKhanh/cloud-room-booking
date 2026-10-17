@@ -150,7 +150,8 @@ export class BookingService {
   async getMine(id, actor) {
     const booking = await this.repository.getBookingView(this.repository.pool, id);
     if (!booking || booking.user_id !== actor.id) throw new ApiError(404, 'BOOKING_NOT_FOUND', 'Không tìm thấy lịch đặt');
-    return { ...booking, can_cancel: booking.status === 'CONFIRMED' && canCancel(booking.check_in_date, this.clock()) };
+    return { ...booking, can_cancel: booking.status === 'CONFIRMED' && booking.payment_status !== 'SUCCEEDED'
+      && canCancel(booking.check_in_date, this.clock()) };
   }
 
   // Khách chỉ được hủy trước giờ nhận phòng (14:00) ít nhất 24 giờ; admin hủy bất cứ lúc nào.
@@ -160,6 +161,9 @@ export class BookingService {
       if (!booking || (!admin && booking.user_id !== actor.id)) throw new ApiError(404, 'BOOKING_NOT_FOUND', 'Không tìm thấy lịch đặt');
       if (booking.status === 'CANCELLED') {
         return { booking: await this.repository.getBookingView(db, id), eventId: null, replayed: true };
+      }
+      if (await this.repository.hasSuccessfulPayment(db, id)) {
+        throw new ApiError(409, 'PAID_BOOKING_CANNOT_CANCEL', 'Đặt phòng đã thanh toán, cần hoàn tiền trước khi hủy');
       }
       if (!admin && !canCancel(booking.check_in_date, this.clock())) {
         throw new ApiError(409, 'CANCELLATION_WINDOW_PASSED', 'Chỉ được hủy trước giờ nhận phòng ít nhất 24 giờ');

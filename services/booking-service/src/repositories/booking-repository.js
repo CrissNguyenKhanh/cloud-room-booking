@@ -1,8 +1,12 @@
 // Các cột trả về cho khách (không có request_hash / idempotency_key).
 const BOOKING_COLUMNS = `b.id, b.booking_code, b.room_id, r.room_number, r.name AS room_name, r.room_type,
   b.user_id, b.status, b.check_in_date, b.check_out_date, b.nights, b.guests, b.price_per_night, b.total_price,
-  b.cancel_reason, b.created_at, b.updated_at`;
+  b.cancel_reason, b.created_at, b.updated_at,
+  COALESCE((SELECT p.status FROM booking.payments p WHERE p.booking_id = b.id
+    ORDER BY p.created_at DESC, p.id DESC LIMIT 1), 'UNPAID') AS payment_status`;
 const BOOKING_FROM = 'FROM booking.bookings b JOIN booking.rooms r ON r.id = b.room_id';
+const PAYMENT_COLUMNS = `p.id, p.booking_id, p.provider, p.amount, p.currency, p.status,
+  p.provider_transaction_id, p.failure_reason, p.created_at, p.updated_at, p.paid_at`;
 
 export class BookingRepository {
   constructor(pool) { this.pool = pool; }
@@ -120,6 +124,58 @@ export class BookingRepository {
       ORDER BY b.created_at DESC LIMIT $4 OFFSET $5`,
     [status ?? null, roomId ?? null, userId ?? null, limit, (page - 1) * limit]);
     return { bookings: rows.map(({ total_count: _total, ...booking }) => booking), total: rows[0]?.total_count ?? 0 };
+  }
+
+  // ---------- Thanh toán ----------
+  async findBookingForPayment(db, id) {
+    const { rows } = await db.query(`SELECT id, booking_code, user_id, status, total_price
+      FROM booking.bookings WHERE id = $1 FOR UPDATE`, [id]);
+    return rows[0] || null;
+  }
+  async findPaymentByIdempotency(db, userId, key, lock = false) {
+    const { rows } = await db.query(`SELECT ${PAYMENT_COLUMNS} FROM booking.payments p
+      WHERE p.user_id = $1 AND p.idempotency_key = $2 ${lock ? 'FOR UPDATE' : ''}`, [userId, key]);
+    return rows[0] || null;
+  }
+  async findActivePayment(db, bookingId, lock = false) {
+    const { rows } = await db.query(`SELECT ${PAYMENT_COLUMNS} FROM booking.payments p
+      WHERE p.booking_id = $1 AND p.status IN ('PENDING', 'SUCCEEDED')
+      ORDER BY p.created_at DESC LIMIT 1 ${lock ? 'FOR UPDATE' : ''}`, [bookingId]);
+    return rows[0] || null;
+  }
+  async insertPendingPayment(db, data) {
+    const { rows } = await db.query(`INSERT INTO booking.payments
+      (booking_id, user_id, provider, amount, currency, status, idempotency_key)
+      VALUES ($1, $2, $3, $4, $5, 'PENDING', $6) RETURNING id`,
+    [data.bookingId, data.userId, data.provider, data.amount, data.currency, data.idempotencyKey]);
+    return this.getPayment(db, rows[0].id);
+  }
+  async getPayment(db, id) {
+    const { rows } = await db.query(`SELECT ${PAYMENT_COLUMNS} FROM booking.payments p WHERE p.id = $1`, [id]);
+    return rows[0] || null;
+  }
+  async markPaymentSucceeded(db, id, transactionId) {
+    const { rows } = await db.query(`UPDATE booking.payments p SET status = 'SUCCEEDED',
+      provider_transaction_id = $2, failure_reason = NULL, paid_at = now(), updated_at = now()
+      WHERE p.id = $1 AND p.status = 'PENDING' RETURNING ${PAYMENT_COLUMNS}`, [id, transactionId]);
+    return rows[0] || this.getPayment(db, id);
+  }
+  async markPaymentFailed(db, id, reason) {
+    const { rows } = await db.query(`UPDATE booking.payments p SET status = 'FAILED',
+      provider_transaction_id = NULL, failure_reason = $2, paid_at = NULL, updated_at = now()
+      WHERE p.id = $1 AND p.status = 'PENDING' RETURNING ${PAYMENT_COLUMNS}`, [id, reason]);
+    return rows[0] || this.getPayment(db, id);
+  }
+  async getLatestPayment(db, bookingId) {
+    const { rows } = await db.query(`SELECT ${PAYMENT_COLUMNS} FROM booking.payments p
+      WHERE p.booking_id = $1 ORDER BY p.created_at DESC, p.id DESC LIMIT 1`, [bookingId]);
+    return rows[0] || null;
+  }
+  async hasSuccessfulPayment(db, bookingId) {
+    const { rows } = await db.query(`SELECT EXISTS (
+      SELECT 1 FROM booking.payments p WHERE p.booking_id = $1 AND p.status = 'SUCCEEDED'
+    ) AS paid`, [bookingId]);
+    return rows[0].paid;
   }
 
   // ---------- Admin: quản lý phòng ----------
